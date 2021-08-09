@@ -6,12 +6,26 @@ import ctypes
 import time
 
 mylib=ctypes.cdll.LoadLibrary("libalbatrostools.so")
+split_buffer_4bit_c=mylib.split_buffer_4bit
+split_buffer_4bit_c.argtypes=[ctypes.c_void_p,ctypes.c_int,ctypes.c_int,ctypes.c_int,ctypes.c_void_p,ctypes.c_void_p]
+
+split_buffer_4bit_wgaps_c=mylib.split_buffer_4bit_wgaps
+split_buffer_4bit_wgaps_c.argtypes=[ctypes.c_void_p,ctypes.c_void_p,ctypes.c_int,ctypes.c_int,ctypes.c_int,ctypes.c_void_p,ctypes.c_void_p]
+
+
+unpack_4bit_1array_c=mylib.unpack_4bit_1array
+unpack_4bit_1array_c.argtypes=[ctypes.c_void_p,ctypes.c_void_p,ctypes.c_int]
 unpack_4bit_c=mylib.unpack_4bit
 unpack_4bit_c.argtypes=[ctypes.c_void_p,ctypes.c_void_p,ctypes.c_void_p,ctypes.c_int,ctypes.c_int]
 unpack_4bit_float_c=mylib.unpack_4bit_float
 unpack_4bit_float_c.argtypes=[ctypes.c_void_p,ctypes.c_void_p,ctypes.c_void_p,ctypes.c_int,ctypes.c_int]
 unpack_1bit_float_c=mylib.unpack_1bit_float
 unpack_1bit_float_c.argtypes=[ctypes.c_void_p,ctypes.c_void_p,ctypes.c_void_p,ctypes.c_int,ctypes.c_int]
+bin_autos_packed_c=mylib.bin_autos_packed
+bin_autos_packed_c.argtypes=[ctypes.c_void_p,ctypes.c_int,ctypes.c_int,ctypes.c_void_p]
+bin_crosses_packed_c=mylib.bin_crosses_packed
+bin_crosses_packed_c.argtypes=[ctypes.c_void_p,ctypes.c_void_p,ctypes.c_int,ctypes.c_int,ctypes.c_void_p]
+
 bin_crosses_float_c=mylib.bin_crosses_float
 bin_crosses_float_c.argtypes=[ctypes.c_void_p,ctypes.c_void_p,ctypes.c_void_p,ctypes.c_int,ctypes.c_int,ctypes.c_int]
 bin_crosses_double_c=mylib.bin_crosses_double
@@ -124,6 +138,25 @@ def unpack_4_bit(data, num_channels):
     pol1=pol1.reshape(-1, num_channels)
     return pol0, pol1
 
+
+def unpack_4bit_1array(arr):
+    out=numpy.empty([arr.shape[0],2*arr.shape[1]],dtype='int8')
+    unpack_4bit_1array_c(arr.ctypes.data,out.ctypes.data,arr.shape[0]*arr.shape[1])
+    return out
+
+def bin_autos_packed(dat):
+    n=dat.shape[0]
+    nchan=dat.shape[1]
+    specs=numpy.zeros(nchan,dtype='int32')
+    bin_autos_packed_c(dat.ctypes.data,n,nchan,specs.ctypes.data)
+    return specs
+def bin_crosses_packed(dat,dat2):
+    n=dat.shape[0]
+    nchan=dat.shape[1]
+    specs=numpy.zeros(nchan*2,dtype='int32')
+    bin_crosses_packed_c(dat.ctypes.data,dat2.ctypes.data,n,nchan,specs.ctypes.data)
+    return specs[::2]+1J*specs[1::2]
+    
 def bin_crosses(pol0,pol1,chunk=100):
     ndat=pol0.shape[0]
     nchan=pol0.shape[1]
@@ -187,6 +220,34 @@ def get_header(file_name):
         header["length_channels"]=int(header["length_channels"]/2)
     return header
 
+def get_data_raw(file_name, items=-1,byte_delta=-8,fill_gaps=False):
+    header=get_header(file_name)
+    file_data=open(file_name, "r")
+    file_data.seek(8+header["header_bytes"]+byte_delta)
+    data=numpy.fromfile(file_data, count=items, dtype=[("spec_num", ">I"), ("spectra", "%dB"%(header["bytes_per_packet"]-4))])
+    file_data.close()
+    specno=numpy.asarray(data['spec_num'],dtype='int')
+    specno[specno<0]=specno[specno<0]+2**32
+    npacket=len(data)
+    specs_per_packet=header['spectra_per_packet']
+    ps=header['bytes_per_packet']
+    nchan=int((ps-4)//specs_per_packet//2)
+    assert(2*nchan*specs_per_packet+4==ps)
+
+    if fill_gaps:
+        mynn=int((specno[-1]-specno[0]+specs_per_packet))
+        #print('mynn is ',mynn)
+        #print('dtype is ',specno.dtype)
+        pol0=numpy.zeros([mynn,nchan],dtype='int8')
+        pol1=numpy.zeros([mynn,nchan],dtype='int8')
+        split_buffer_4bit_wgaps_c(data.ctypes.data,specno.ctypes.data,ps,specs_per_packet,npacket,pol0.ctypes.data,pol1.ctypes.data)
+    else:
+        nn=int(npacket*specs_per_packet)
+        pol0=numpy.zeros([nn,nchan],dtype='int8')
+        pol1=numpy.zeros([nn,nchan],dtype='int8')
+        split_buffer_4bit_c(data.ctypes.data,ps,specs_per_packet,npacket,pol0.ctypes.data,pol1.ctypes.data)
+    return header,specno,pol0,pol1
+    
 def get_data(file_name, items=-1,unpack_fast=False,float=False,byte_delta=0):
     header=get_header(file_name)
     file_data=open(file_name, "r")
@@ -194,7 +255,7 @@ def get_data(file_name, items=-1,unpack_fast=False,float=False,byte_delta=0):
     data=numpy.fromfile(file_data, count=items, dtype=[("spec_num", ">I"), ("spectra", "%dB"%(header["bytes_per_packet"]-4))])
     file_data.close()
     if header["bit_mode"]==1:
-        raw_spectra=data["spectra"].reshape(-1, header["length_channels"]/2)
+        raw_spectra=data["spectra"].reshape(-1, header["length_channels"]//2)
         pol0, pol1=unpack_1_bit(raw_spectra, header["length_channels"])
     if header["bit_mode"]==2:
         raw_spectra=data["spectra"].reshape(-1, header["length_channels"])

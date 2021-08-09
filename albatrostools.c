@@ -1,7 +1,77 @@
 #include <stdio.h>
 #include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
 // gcc-9 -O3 -o libalbatrostools.so -fPIC --shared albatrostools.c -fopenmp
 // also need to add ur directory to LD_LIBRARY_PATH
+
+/*--------------------------------------------------------------------------------*/
+
+void split_buffer_4bit(char *buf, int bytes_per_packet, int specs_per_packet, int npacket,char *pol0, char *pol1)
+{
+  int nchan=(bytes_per_packet-4)/specs_per_packet/2;
+  //printf("have %d channels.\n",nchan);
+#pragma omp parallel for
+  for (int pack=0;pack<npacket;pack++) {
+    char *cur=buf+pack*bytes_per_packet+4;
+    for (int j=0;j<specs_per_packet;j++) {
+      int jj=pack*specs_per_packet+j;
+      for (int i=0;i<nchan;i++) {
+	pol0[(jj)*nchan+i]=cur[2*(j*nchan+i)];
+	pol1[(jj)*nchan+i]=cur[2*(j*nchan+i)+1];
+      }
+    }
+  }
+}
+
+/*--------------------------------------------------------------------------------*/
+
+void split_buffer_4bit_wgaps(char *buf, long *specno, int bytes_per_packet, int specs_per_packet, int npacket,char *pol0, char *pol1)
+{
+  int nchan=(bytes_per_packet-4)/specs_per_packet/2;
+  //printf("have %d channels.\n",nchan);
+  //printf("have %d output packets\n",specno[npacket-1]-specno[0]);
+  //printf("starting spectrum number is %ld\n",specno[0]);
+#pragma omp parallel for
+  for (int pack=0;pack<npacket;pack++) {
+    char *cur=buf+pack*bytes_per_packet+4;
+    //char *cur=buf+(specno[pack]-specno[0])*bytes_per_packet+4;
+    for (int j=0;j<specs_per_packet;j++){
+      int jj=(specno[pack]-specno[0])+j;
+      //int jj=pack*specs_per_packet+j;
+      //if (jj2-jj>delt_max) {
+      //printf("increasing delta on %d from %d to %d\n",pack,delt_max,jj2-jj);
+      //delt_max=jj2-jj;
+      //}
+      
+      for (int i=0;i<nchan;i++) {
+
+	pol0[jj*nchan+i]=cur[2*(j*nchan+i)];
+	pol1[jj*nchan+i]=cur[2*(j*nchan+i)+1];
+      }
+    }
+  }
+}
+
+/*--------------------------------------------------------------------------------*/
+void unpack_4bit_1array(uint8_t *data, int8_t *out, long ndata)
+{
+  uint8_t rmask=15;
+  uint8_t imask=255-15;
+
+#pragma omp parallel for
+  for (int i=0;i<ndata;i++) {
+    uint8_t r=data[i]&rmask;
+    uint8_t im=(data[i]&imask)>>4;
+    out[2*i]=im;
+    out[2*i+1]=r;
+    if (out[2*i]>8)
+      out[2*i]-=16;
+    if (out[2*i+1]>8)
+      out[2*i+1]-=16;        
+  }
+}
+/*--------------------------------------------------------------------------------*/
 
 void unpack_4bit(uint8_t *data,double *pol0, double *pol1, int ndat, int nchan)
 {
@@ -165,6 +235,84 @@ void unpack_1bit_float(uint8_t *data, float *pol0, float *pol1, int ndat, int nc
       
       //}
     }
+  }
+}
+/*--------------------------------------------------------------------------------*/
+void bin_autos_packed(uint8_t *dat,int nspec, int nchan, int *spec)
+{
+  
+  uint8_t rmask=15;
+  uint8_t imask=255-15;
+
+#pragma omp parallel
+  {
+    int *tmp=(int *)malloc(2*nchan*sizeof(int));
+    memset(tmp,0,2*nchan*sizeof(int));
+#pragma omp for
+    for (int i=0;i<nspec;i++)
+      for (int j=0;j<nchan;j++) {
+
+	uint8_t rr=dat[i*nchan+j]&rmask;
+	uint8_t ii=(dat[i*nchan+j]&imask)>>4;
+	int r=rr;
+	int im=ii;
+	if (r>8)
+	  r-=16;
+	if (im>8)
+	  im-=16;
+	tmp[j]+=r*r+im*im;
+      }
+#pragma omp critical
+    {
+      for (int i=0;i<nchan;i++)
+	spec[i]+=tmp[i];
+    }
+    free(tmp);
+  }
+}
+/*--------------------------------------------------------------------------------*/
+void bin_crosses_packed(uint8_t *dat,uint8_t *dat2, int nspec, int nchan, int *spec)
+{
+  
+  uint8_t rmask=15;
+  uint8_t imask=255-15;
+
+#pragma omp parallel
+  {
+    int *tmp=(int *)malloc(2*nchan*sizeof(int));
+    memset(tmp,0,2*nchan*sizeof(int));
+#pragma omp for
+    for (int i=0;i<nspec;i++)
+      for (int j=0;j<nchan;j++) {
+
+	uint8_t rr;
+	uint8_t ii;
+	rr=dat[i*nchan+j]&rmask;
+	ii=(dat[i*nchan+j]&imask)>>4;
+	int r=rr;
+	int im=ii;
+	if (r>8)
+	  r-=16;
+	if (im>8)
+	  im-=16;
+	rr=dat2[i*nchan+j]&rmask;
+	ii=(dat2[i*nchan+j]&imask)>>4;
+	int r2=rr;
+	int im2=ii;
+	if (r2>8)
+	  r2-=16;
+	if (im2>8)
+	  im2-=16;
+
+	tmp[2*j]+=r*r2+im*im2;
+	tmp[2*j+1]+=r*im2-im*r2;
+      }
+#pragma omp critical
+    {
+      for (int i=0;i<2*nchan;i++)
+	spec[i]+=tmp[i];
+    }
+    free(tmp);
   }
 }
 /*--------------------------------------------------------------------------------*/
