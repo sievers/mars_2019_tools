@@ -94,8 +94,8 @@ def unpack_2_bit(data, num_channels):
 
 def unpack_1bit_fast(data,num_channels,float=False):
     if float:
-        pol0=numpy.zeros([data.shape[0]*2,num_channels],dtype='complex64')
-        pol1=numpy.zeros([data.shape[0]*2,num_channels],dtype='complex64')
+        pol0=numpy.empty([data.shape[0]*2,num_channels],dtype='complex64')
+        pol1=numpy.empty([data.shape[0]*2,num_channels],dtype='complex64')
         unpack_1bit_float_c(data.ctypes.data,pol0.ctypes.data,pol1.ctypes.data,data.shape[0],data.shape[1]);
         
     else:
@@ -161,6 +161,7 @@ def bin_crosses(pol0,pol1,chunk=100):
     ndat=pol0.shape[0]
     nchan=pol0.shape[1]
     nchunk=ndat//chunk
+    print('nchunk is ',nchunk)
     if pol0.itemsize==8:
         spec=numpy.zeros([nchunk,nchan],dtype='complex64')
         bin_crosses_float_c(pol0.ctypes.data,pol1.ctypes.data,spec.ctypes.data,ndat,nchan,chunk)
@@ -252,11 +253,22 @@ def get_data(file_name, items=-1,unpack_fast=False,float=False,byte_delta=0):
     header=get_header(file_name)
     file_data=open(file_name, "r")
     file_data.seek(8+header["header_bytes"]+byte_delta)
+    t1=time.time()
     data=numpy.fromfile(file_data, count=items, dtype=[("spec_num", ">I"), ("spectra", "%dB"%(header["bytes_per_packet"]-4))])
+    t2=time.time()
+    print('took ',t2-t1,' seconds to read raw data on ',file_name)
     file_data.close()
     if header["bit_mode"]==1:
         raw_spectra=data["spectra"].reshape(-1, header["length_channels"]//2)
-        pol0, pol1=unpack_1_bit(raw_spectra, header["length_channels"])
+        if unpack_fast:
+            if (float==False):
+                print("requested fast unpacking but not float.  Preferring the fast so return will be fast.")
+            print('nchannels is ',header["length_channels"])
+            print('data shape is ',raw_spectra.shape)
+            print(raw_spectra[:5,:5])
+            pol0, pol1=unpack_1bit_fast(raw_spectra, header["length_channels"],float=True)
+        else:
+            pol0, pol1=unpack_1_bit(raw_spectra, header["length_channels"])
     if header["bit_mode"]==2:
         raw_spectra=data["spectra"].reshape(-1, header["length_channels"])
         pol0, pol1=unpack_2_bit(raw_spectra, header["length_channels"])
